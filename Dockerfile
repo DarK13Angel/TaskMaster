@@ -11,7 +11,7 @@ WORKDIR /app/web
 
 # Install frontend dependencies
 COPY web/package*.json ./
-RUN npm ci || npm install
+RUN npm ci
 
 # Build static assets into /app/web/dist
 COPY web/ ./
