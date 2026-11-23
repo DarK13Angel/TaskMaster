@@ -1,7 +1,7 @@
 package models
 
 // StatusTag represents an ordered column/stage in the task pipeline
-type Statustag struct {
+type StatusTag struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	Color      string `json:"color,omitempty"`
