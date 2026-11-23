@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
+
+	"taskmaster/internal/api"
 	"taskmaster/internal/db"
 )
 
@@ -16,5 +19,12 @@ func main() {
 	defer database.Close()
 
 	fmt.Println(" Connected to SQLite database (~/.taskmaster/taskmaster.db)")
-	fmt.Println(" Database schema and initial seeds verified successfully!")
+
+	server := api.NewServer(database)
+	port := "8088"
+	fmt.Println("TaskMaster API listening on http://localhost:%s\n", port)
+
+	if err := http.ListenAndServe(":"+port, server.Routes()); err != nil {
+		log.Fatal("Failed to start server: %v", err)
+	}
 }

@@ -28,7 +28,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 // enableCors allows local Vue FE to talk to API without CORS issues
-func enableCors(next http.Handler) http.Handler {
+func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
@@ -40,4 +40,31 @@ func enableCors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Routes registers all API endpoints and applies CORS middleware
+func (s *Server) Routes() http.Handler {
+	mux := http.NewServeMux()
+
+	// Health check
+	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "app": "TaskMaster"})
+	})
+
+	// Status Tags & Priorities
+	mux.HandleFunc("GET /api/v1/status-tags", s.ListStatusTags)
+	mux.HandleFunc("GET /api/v1/priorities", s.ListPriorities)
+
+	// Projects
+	mux.HandleFunc("GET /api/v1/projects", s.ListProjects)
+	mux.HandleFunc("POST /api/v1/projects", s.CreateProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.DeleteProject)
+
+	// Tasks
+	mux.HandleFunc("GET /api/v1/tasks", s.ListTasks)
+	mux.HandleFunc("POST /api/v1/tasks", s.CreateTask)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/move", s.MoveTask)
+	mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.DeleteTask)
+
+	return enableCORS(mux)
 }
