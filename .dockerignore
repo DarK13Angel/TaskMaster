@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+web/node_modules
+bin
+.build
+*.db
+*.db-wal
+*.db-shm
+.taskmaster
+.env
+.DS_Store
+*.log
+*.err
+plan.md

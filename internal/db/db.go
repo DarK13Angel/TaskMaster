@@ -16,13 +16,18 @@ type DB struct {
 
 // InitDB opens/creates database for taskmaster
 func InitDB() (*DB, error) {
-	// fetch Home directory
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	appDir := os.Getenv("TASKMASTER_DATA_DIR")
+	if appDir == "" {
+		appDir = os.Getenv("DATA_DIR")
 	}
-	// creates app Directory
-	appDir := filepath.Join(homeDir, ".taskmaster")
+	if appDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		appDir = filepath.Join(homeDir, ".taskmaster")
+	}
+
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create app directory: %w", err)
 	}

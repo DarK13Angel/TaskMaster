@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"taskmaster"
 	"taskmaster/internal/api"
 	"taskmaster/internal/cleanup"
 	"taskmaster/internal/config"
@@ -30,10 +31,10 @@ func main() {
 	cleanup.StartWorker(database, cfg.TaskTTLDays, cleanupInterval)
 	fmt.Printf("🧹 Auto-cleanup active: Completed/Killed tasks purged after %d days (every %d hrs)\n", cfg.TaskTTLDays, cfg.CleanupIntervalHours)
 
-	server := api.NewServer(database)
-	fmt.Printf(" TaskMaster API listening on http://localhost:%s\n", cfg.Port)
+	server := api.NewServer(database, taskmaster.DistFS())
+	fmt.Printf(" TaskMaster API & Web UI listening on http://localhost:%s\n", cfg.Port)
 
 	if err := http.ListenAndServe(":"+cfg.Port, server.Routes()); err != nil {
-		log.Fatal("Failed to start server: %v", err)
+		log.Fatalf("Failed to start server: %v", err)
 	}
 }

@@ -1,6 +1,8 @@
 # Build and runtime artifacts
 .build/
-dist/
+/dist/
+web/dist/*
+!web/dist/.gitkeep
 bin/
 *.exe
 *.exe~

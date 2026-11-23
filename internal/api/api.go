@@ -2,19 +2,22 @@ package api
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"taskmaster/internal/cleanup"
 	"taskmaster/internal/db"
 )
 
 type Server struct {
-	DB *db.DB
+	DB     *db.DB
+	DistFS fs.FS
 }
 
-func NewServer(database *db.DB) *Server {
-	return &Server{DB: database}
+func NewServer(database *db.DB, distFS fs.FS) *Server {
+	return &Server{DB: database, DistFS: distFS}
 }
 
 // writeJson write struct or map JSON with given status code
@@ -80,6 +83,30 @@ func (s *Server) Routes() http.Handler {
 
 	// System & Maintenance
 	mux.HandleFunc("POST /api/v1/system/cleanup", s.TriggerCleanup)
+
+	// Embedded / Static SPA Web UI
+	if s.DistFS != nil {
+		fileServer := http.FileServer(http.FS(s.DistFS))
+		mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				http.NotFound(w, r)
+				return
+			}
+
+			filePath := strings.TrimPrefix(r.URL.Path, "/")
+			if filePath != "" {
+				if f, err := s.DistFS.Open(filePath); err == nil {
+					f.Close()
+					fileServer.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			// SPA Fallback for client-side routing
+			r.URL.Path = "/"
+			fileServer.ServeHTTP(w, r)
+		})
+	}
 
 	return enableCORS(mux)
 }
