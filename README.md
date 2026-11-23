@@ -32,7 +32,7 @@ docker run -d \
   -p 8088:8088 \
   -v taskmaster-data:/data \
   --restart unless-stopped \
-  ghcr.io/<your-github-username>/taskmaster:latest
+  ghcr.io/dark13angel/taskmaster:latest
 ```
 
 Open your browser and visit: **`http://localhost:8088`**
@@ -209,7 +209,7 @@ The included GitHub Actions workflow (`.github/workflows/release.yml`) automates
 3. **Cross-Platform Binaries**: Compiles standalone binaries for macOS (Intel & Apple Silicon), Linux (AMD64 & ARM64), and Windows (AMD64).
 4. **GitHub Release**: Publishes a new GitHub Release with release notes and downloadable binary archives.
 5. **Multi-Arch Docker Images**: Builds and pushes multi-architecture images (`linux/amd64`, `linux/arm64`) to the GitHub Container Registry (`ghcr.io`):
-   - `ghcr.io/<repo-owner>/taskmaster:latest`
-   - `ghcr.io/<repo-owner>/taskmaster:v1.0.<run_number>`
+   - `ghcr.io/dark13angel/taskmaster:latest`
+   - `ghcr.io/dark13angel/taskmaster:v1.0.<run_number>`
 
 ---
