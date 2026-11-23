@@ -20,7 +20,7 @@ RUN npm run build
 # ---------------------------------------------------------------------
 # Stage 2: Build Go Backend with Embedded Frontend
 # ---------------------------------------------------------------------
-FROM golang:1.24-alpine AS backend-builder
+FROM golang:alpine AS backend-builder
 WORKDIR /app
 
 # Install git for dependency resolution if needed
