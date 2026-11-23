@@ -22,7 +22,7 @@ func main() {
 
 	server := api.NewServer(database)
 	port := "8088"
-	fmt.Println("TaskMaster API listening on http://localhost:%s\n", port)
+	fmt.Printf("TaskMaster API listening on http://localhost:%s\n", port)
 
 	if err := http.ListenAndServe(":"+port, server.Routes()); err != nil {
 		log.Fatal("Failed to start server: %v", err)

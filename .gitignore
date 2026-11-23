@@ -27,3 +27,7 @@ node_modules/
 
 # docs
 plan.md
+
+#ide
+.vscode
+
