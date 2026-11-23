@@ -1,0 +1,29 @@
+# Build and runtime artifacts
+.build/
+dist/
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Database & local data
+*.db
+*.db-wal
+*.db-shm
+.taskmaster/
+
+# Dependencies
+node_modules/
+.venv/
+
+# Logs
+*.log
+*.err
+
+# OS files
+.DS_Store
+
+# docs
+plan.md
