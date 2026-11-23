@@ -4,13 +4,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"taskmaster/internal/api"
+	"taskmaster/internal/cleanup"
+	"taskmaster/internal/config"
 	"taskmaster/internal/db"
 )
 
 func main() {
-	fmt.Println("TaskMaster service starting...")
+	fmt.Println("🚀 TaskMaster service starting...")
+
+	cfg := config.Load()
 
 	database, err := db.InitDB()
 	if err != nil {
@@ -20,11 +25,15 @@ func main() {
 
 	fmt.Println(" Connected to SQLite database (~/.taskmaster/taskmaster.db)")
 
-	server := api.NewServer(database)
-	port := "8088"
-	fmt.Printf("TaskMaster API listening on http://localhost:%s\n", port)
+	// Start background cleanup worker from .env settings
+	cleanupInterval := time.Duration(cfg.CleanupIntervalHours) * time.Hour
+	cleanup.StartWorker(database, cfg.TaskTTLDays, cleanupInterval)
+	fmt.Printf("🧹 Auto-cleanup active: Completed/Killed tasks purged after %d days (every %d hrs)\n", cfg.TaskTTLDays, cfg.CleanupIntervalHours)
 
-	if err := http.ListenAndServe(":"+port, server.Routes()); err != nil {
+	server := api.NewServer(database)
+	fmt.Printf(" TaskMaster API listening on http://localhost:%s\n", cfg.Port)
+
+	if err := http.ListenAndServe(":"+cfg.Port, server.Routes()); err != nil {
 		log.Fatal("Failed to start server: %v", err)
 	}
 }

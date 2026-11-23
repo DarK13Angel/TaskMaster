@@ -12,6 +12,8 @@ func (db *DB) migrate() error {
 		name TEXT NOT NULL,
 		description TEXT,
 		sort_order INTEGER DEFAULT 0,
+		is_archived BOOLEAN DEFAULT 0,
+		historical_done_count INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -35,10 +37,24 @@ func (db *DB) migrate() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		completed_at DATETIME
 	);
+
+	CREATE TABLE IF NOT EXISTS subtasks (
+		id TEXT PRIMARY KEY,
+		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		title TEXT NOT NULL,
+		is_done BOOLEAN DEFAULT 0,
+		sort_order INTEGER DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
+
+	// Graceful upgrades for existing databases
+	_, _ = db.Exec("ALTER TABLE projects ADD COLUMN is_archived BOOLEAN DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE projects ADD COLUMN historical_done_count INTEGER DEFAULT 0;")
+
 	return db.seedDefaults()
 }
 

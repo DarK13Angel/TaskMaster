@@ -3,6 +3,9 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+
+	"taskmaster/internal/cleanup"
 	"taskmaster/internal/db"
 )
 
@@ -58,13 +61,47 @@ func (s *Server) Routes() http.Handler {
 	// Projects
 	mux.HandleFunc("GET /api/v1/projects", s.ListProjects)
 	mux.HandleFunc("POST /api/v1/projects", s.CreateProject)
+	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.UpdateProject)
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.DeleteProject)
 
 	// Tasks
 	mux.HandleFunc("GET /api/v1/tasks", s.ListTasks)
+	mux.HandleFunc("GET /api/v1/tasks/{id}", s.GetTask)
 	mux.HandleFunc("POST /api/v1/tasks", s.CreateTask)
+	mux.HandleFunc("PATCH /api/v1/tasks/{id}", s.UpdateTask)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/move", s.MoveTask)
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.DeleteTask)
 
+	// Subtasks (Checklist)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/subtasks", s.ListSubtasks)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/subtasks", s.AddSubtask)
+	mux.HandleFunc("PATCH /api/v1/subtasks/{id}", s.ToggleSubtask)
+	mux.HandleFunc("DELETE /api/v1/subtasks/{id}", s.DeleteSubtask)
+
+	// System & Maintenance
+	mux.HandleFunc("POST /api/v1/system/cleanup", s.TriggerCleanup)
+
 	return enableCORS(mux)
+}
+
+// TriggerCleanup manually runs the purge routine with an optional ?days= query param (defaults to 30)
+func (s *Server) TriggerCleanup(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	if daysStr := r.URL.Query().Get("days"); daysStr != "" {
+		if parsed, err := strconv.Atoi(daysStr); err == nil && parsed > 0 {
+			days = parsed
+		}
+	}
+
+	deleted, err := cleanup.PurgeOldCompletedTasks(s.DB, days)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cleanup failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":        "cleanup complete",
+		"purged_count":   deleted,
+		"retention_days": days,
+	})
 }

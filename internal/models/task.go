@@ -17,6 +17,20 @@ type Task struct {
 	StatusName   string     `json:"status_name,omitempty"`
 	PriorityName string     `json:"priority_name,omitempty"`
 	ProjectName  string     `json:"project_name,omitempty"`
+
+	// Subtasks metadata
+	TotalSubtasks int       `json:"total_subtasks"`
+	DoneSubtasks  int       `json:"done_subtasks"`
+	Subtasks      []Subtask `json:"subtasks,omitempty"`
+}
+
+// Subtask represents a to-do item within a task
+type Subtask struct {
+	ID        string `json:"id"`
+	TaskID    string `json:"task_id"`
+	Title     string `json:"title"`
+	IsDone    bool   `json:"is_done"`
+	SortOrder int    `json:"sort_order"`
 }
 
 // MoveTaskRequest - moves task from one task to another
