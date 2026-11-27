@@ -6,12 +6,14 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/sqlitedialect"
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps standard *sql.DB connection pool
+// DB wraps *bun.DB connection pool
 type DB struct {
-	*sql.DB
+	*bun.DB
 }
 
 // InitDB opens/creates database for taskmaster
@@ -42,10 +44,6 @@ func InitDB() (*DB, error) {
 		return nil, fmt.Errorf("database ping failed: %w", err)
 	}
 
-	db := &DB{sqlDB}
-	if err := db.migrate(); err != nil {
-		return nil, fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	return db, nil
+	bunDB := bun.NewDB(sqlDB, sqlitedialect.New())
+	return &DB{bunDB}, nil
 }

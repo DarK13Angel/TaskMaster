@@ -4,8 +4,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// migrate creates tables and default records if they don't exist
-func (db *DB) migrate() error {
+// TablesExist checks whether all required application tables exist in the database.
+func (db *DB) TablesExist() (bool, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name IN ('projects', 'status_tags', 'tasks', 'subtasks')
+	`).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count == 4, nil
+}
+
+// Migrate creates tables and default records if they don't exist
+func (db *DB) Migrate() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS projects (
 		id TEXT PRIMARY KEY,
