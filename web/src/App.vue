@@ -55,6 +55,7 @@ function showToast(message, type = 'info') {
 const newTask = reactive({
   title: '',
   project_id: '',
+  parent_task: '',
   status_id: '',
   priority: 'medium',
   due_date: '',
@@ -66,13 +67,43 @@ const editingTask = reactive({
   id: '',
   title: '',
   project_id: '',
+  parent_task: '',
   status_id: '',
   priority: 'medium',
   due_date: '',
   notes: '',
-  subtasks: []
+  subtasks: [],
+  child_tasks: []
 })
 const newSubtaskTitle = ref('')
+
+const availableParentTasksForNew = computed(() => {
+  if (!newTask.project_id) return []
+  return tasks.value.filter(t => t.project_id === newTask.project_id)
+})
+
+const availableParentTasksForEdit = computed(() => {
+  if (!editingTask.project_id) return []
+  return tasks.value.filter(t => t.project_id === editingTask.project_id && t.id !== editingTask.id)
+})
+
+function getParentTaskTitle(parentId) {
+  if (!parentId) return ''
+  const parent = tasks.value.find(t => t.id === parentId)
+  return parent ? parent.title : 'Parent task'
+}
+
+function onNewTaskProjectChange() {
+  if (newTask.parent_task && !availableParentTasksForNew.value.some(t => t.id === newTask.parent_task)) {
+    newTask.parent_task = ''
+  }
+}
+
+function onEditTaskProjectChange() {
+  if (editingTask.parent_task && !availableParentTasksForEdit.value.some(t => t.id === editingTask.parent_task)) {
+    editingTask.parent_task = ''
+  }
+}
 
 // Project Detail / Edit State
 const projectDetail = reactive({
@@ -138,6 +169,7 @@ function openNewTaskModal(preselectedProjectId = null) {
   if (initial) newTask.status_id = initial.id
 
   newTask.title = ''
+  newTask.parent_task = ''
   newTask.notes = ''
   newTask.due_date = ''
   newTask.priority = 'medium'
@@ -154,11 +186,13 @@ async function openEditModal(task) {
     editingTask.id = fullTask.id
     editingTask.title = fullTask.title
     editingTask.project_id = fullTask.project_id
+    editingTask.parent_task = fullTask.parent_task || ''
     editingTask.status_id = fullTask.status_id
     editingTask.priority = fullTask.priority
     editingTask.notes = fullTask.notes || ''
     editingTask.due_date = fullTask.due_date ? fullTask.due_date.split('T')[0] : ''
     editingTask.subtasks = fullTask.subtasks || []
+    editingTask.child_tasks = fullTask.child_tasks || []
     newSubtaskTitle.value = ''
     isEditModalOpen.value = true
   } catch (err) {
@@ -281,6 +315,7 @@ async function handleSaveTaskEdits() {
       notes: editingTask.notes.trim(),
       priority: editingTask.priority,
       project_id: editingTask.project_id,
+      parent_task: editingTask.parent_task || '',
       due_date: editingTask.due_date ? new Date(editingTask.due_date).toISOString() : null
     }
 
@@ -391,7 +426,7 @@ function openProjectBoard(projectId) {
 // Fetch APIs
 async function fetchProjects() {
   try {
-    const res = await fetch('/api/v1/projects')
+    const res = await fetch('/api/v1/projects?skip=0&limit=1000')
     if (res.ok) projects.value = await res.json()
   } catch (err) {
     showToast('Failed to load projects: ' + err.message, 'error')
@@ -596,6 +631,7 @@ async function handleCreateTask() {
     const payload = {
       title: newTask.title.trim(),
       project_id: newTask.project_id,
+      parent_task: newTask.parent_task || null,
       status_id: newTask.status_id,
       priority: newTask.priority,
       notes: newTask.notes.trim(),
@@ -1089,6 +1125,7 @@ onUnmounted(() => {
             <div class="task-row-left">
               <span class="badge" :class="'badge-' + t.priority">{{ t.priority }}</span>
               <span class="task-row-title">{{ t.title }}</span>
+              <span v-if="t.parent_task" class="parent-task-pill" :title="'Parent: ' + getParentTaskTitle(t.parent_task)">↳ {{ getParentTaskTitle(t.parent_task) }}</span>
               <span v-if="t.total_subtasks > 0" class="subtask-mini-pill">☑️ {{ t.done_subtasks }}/{{ t.total_subtasks }}</span>
             </div>
             <div class="task-row-right">
@@ -1196,6 +1233,9 @@ onUnmounted(() => {
               <span v-if="task.project_name" class="project-tag">
                 📁 {{ task.project_name }}
               </span>
+              <span v-if="task.parent_task" class="parent-task-pill" :title="'Parent: ' + getParentTaskTitle(task.parent_task)">
+                ↳ {{ getParentTaskTitle(task.parent_task) }}
+              </span>
               <span v-if="task.due_date" class="due-tag">
                 📅 {{ formatDate(task.due_date) }}
               </span>
@@ -1238,21 +1278,29 @@ onUnmounted(() => {
 
           <div class="form-row">
             <div class="form-group">
-              <label>Project *</label>
-              <select v-model="newTask.project_id" required>
+              <label for="new-task-project">Project *</label>
+              <select id="new-task-project" name="project_id" v-model="newTask.project_id" @change="onNewTaskProjectChange" required>
                 <option value="" disabled>-- Select a project --</option>
                 <option v-for="p in projects.filter(p => !p.is_archived)" :key="p.id" :value="p.id">{{ p.name }}</option>
               </select>
             </div>
 
             <div class="form-group">
-              <label>Initial Status</label>
-              <select v-model="newTask.status_id">
+              <label for="new-task-status">Initial Status</label>
+              <select id="new-task-status" name="status_id" v-model="newTask.status_id">
                 <option v-for="s in statusTags.filter(t => t.is_initial)" :key="s.id" :value="s.id">
                   {{ s.name }}
                 </option>
               </select>
             </div>
+          </div>
+
+          <div class="form-group">
+            <label for="new-task-parent">Parent Task (optional)</label>
+            <select id="new-task-parent" name="parent_task" v-model="newTask.parent_task" :disabled="!newTask.project_id">
+              <option value="">None (top-level task)</option>
+              <option v-for="pt in availableParentTasksForNew" :key="pt.id" :value="pt.id">{{ pt.title }}</option>
+            </select>
           </div>
 
           <div class="form-row">
@@ -1300,15 +1348,15 @@ onUnmounted(() => {
 
           <div class="form-row">
             <div class="form-group">
-              <label>Project</label>
-              <select v-model="editingTask.project_id">
+              <label for="edit-task-project">Project</label>
+              <select id="edit-task-project" name="project_id" v-model="editingTask.project_id" @change="onEditTaskProjectChange">
                 <option v-for="p in projects.filter(p => !p.is_archived)" :key="p.id" :value="p.id">{{ p.name }}</option>
               </select>
             </div>
 
             <div class="form-group">
-              <label>Priority</label>
-              <select v-model="editingTask.priority">
+              <label for="edit-task-priority">Priority</label>
+              <select id="edit-task-priority" name="priority" v-model="editingTask.priority">
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
                 <option value="high">High</option>
@@ -1317,8 +1365,35 @@ onUnmounted(() => {
             </div>
 
             <div class="form-group">
-              <label>Due Date</label>
-              <input type="date" v-model="editingTask.due_date" />
+              <label for="edit-task-due">Due Date</label>
+              <input id="edit-task-due" name="due_date" type="date" v-model="editingTask.due_date" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="edit-task-parent">Parent Task (optional)</label>
+            <select id="edit-task-parent" name="parent_task" v-model="editingTask.parent_task">
+              <option value="">None (top-level task)</option>
+              <option v-for="pt in availableParentTasksForEdit" :key="pt.id" :value="pt.id">{{ pt.title }}</option>
+            </select>
+          </div>
+
+          <div v-if="editingTask.child_tasks.length > 0" class="subtasks-section">
+            <div class="subtasks-header">
+              <label>↳ Child Tasks ({{ editingTask.child_tasks.length }})</label>
+            </div>
+            <div class="subtask-list">
+              <button
+                v-for="ct in editingTask.child_tasks"
+                :key="ct.id"
+                type="button"
+                class="child-task-link"
+                @click="openEditModal(ct)"
+              >
+                <span class="badge" :class="'badge-' + ct.priority">{{ ct.priority }}</span>
+                <span class="subtask-title">{{ ct.title }}</span>
+                <span class="arrow-icon">→</span>
+              </button>
             </div>
           </div>
 
@@ -2526,6 +2601,38 @@ onUnmounted(() => {
   border-radius: 4px;
 }
 
+.parent-task-pill {
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #7dd3fc;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.child-task-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  background: #162033;
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  color: #f1f5f9;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.child-task-link:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
 .card-move {
   display: flex;
   align-items: center;
@@ -2628,7 +2735,8 @@ onUnmounted(() => {
   outline: none;
 }
 
-.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus,
+.form-group input:focus-visible, .form-group select:focus-visible, .form-group textarea:focus-visible {
   border-color: #38bdf8;
   box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
 }
