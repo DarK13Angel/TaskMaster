@@ -1,14 +1,18 @@
 package models
 
+import "github.com/uptrace/bun"
+
 // StatusTag represents an ordered column/stage in the task pipeline
 type StatusTag struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Color      string `json:"color,omitempty"`
-	SortOrder  int    `json:"sort_order"`
-	IsSystem   bool   `json:"is_system"`
-	IsInitial  bool   `json:"is_initial"`
-	IsTerminal bool   `json:"is_terminal"`
+	bun.BaseModel `bun:"table:status_tags,alias:st"`
+
+	ID         string `json:"id" bun:"id,pk"`
+	Name       string `json:"name" bun:"name,notnull,unique"`
+	Color      string `json:"color,omitempty" bun:"-"`
+	SortOrder  int    `json:"sort_order" bun:"sort_order,default:0"`
+	IsSystem   bool   `json:"is_system" bun:"is_system,default:false"`
+	IsInitial  bool   `json:"is_initial" bun:"is_initial,default:false"`
+	IsTerminal bool   `json:"is_terminal" bun:"is_terminal,default:false"`
 }
 
 // Priority Enum types

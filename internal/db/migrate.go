@@ -44,7 +44,7 @@ func (db *DB) Migrate() error {
 		title TEXT NOT NULL,
 		notes TEXT,
 		status_id TEXT NOT NULL REFERENCES status_tags(id),
-		priority TEXT NOT NULL DEFAULT 'medium',
+		priority TEXT NOT NULL DEFAULT 'low',
 		due_date DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
