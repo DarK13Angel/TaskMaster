@@ -41,6 +41,7 @@ func (db *DB) Migrate() error {
 	CREATE TABLE IF NOT EXISTS tasks (
 		id TEXT PRIMARY KEY,
 		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		parent_task TEXT REFERENCES tasks(id) ON DELETE SET NULL,
 		title TEXT NOT NULL,
 		notes TEXT,
 		status_id TEXT NOT NULL REFERENCES status_tags(id),
@@ -67,6 +68,7 @@ func (db *DB) Migrate() error {
 	// Graceful upgrades for existing databases
 	_, _ = db.Exec("ALTER TABLE projects ADD COLUMN is_archived BOOLEAN DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE projects ADD COLUMN historical_done_count INTEGER DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN parent_task TEXT REFERENCES tasks(id) ON DELETE SET NULL;")
 
 	return db.seedDefaults()
 }

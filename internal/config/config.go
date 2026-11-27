@@ -13,16 +13,17 @@ type Config struct {
 
 // Load loads settings from .env file (if present) and environment variables
 func Load() *Config {
-	viper.SetConfigFile(".env")
-	viper.ReadInConfig()
+	viper.SetDefault("PORT", "8088")
+	viper.SetDefault("TASK_TTL_DAYS", 30)
+	viper.SetDefault("CLEANUP_INTERVAL_HOURS", 6)
 
-	port := viper.Get("PORT").(string)
-	ttlDays := viper.Get("TaskTTLDays").(int)
-	cleanupInterval := viper.Get("CLEANUP_INTERVAL_HOURS").(int)
+	viper.SetConfigFile(".env")
+	_ = viper.ReadInConfig()
+	viper.AutomaticEnv()
 
 	return &Config{
-		Port:                 port,
-		TaskTTLDays:          ttlDays,
-		CleanupIntervalHours: cleanupInterval,
+		Port:                 viper.GetString("PORT"),
+		TaskTTLDays:          viper.GetInt("TASK_TTL_DAYS"),
+		CleanupIntervalHours: viper.GetInt("CLEANUP_INTERVAL_HOURS"),
 	}
 }

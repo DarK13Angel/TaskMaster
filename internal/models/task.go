@@ -12,6 +12,7 @@ type Task struct {
 
 	ID           string     `json:"id" bun:"id,pk"`
 	ProjectID    string     `json:"project_id" bun:"project_id,notnull"`
+	ParentTask   *string    `json:"parent_task,omitempty" bun:"parent_task,nullzero"`
 	Title        string     `json:"title" bun:"title,notnull"`
 	Notes        string     `json:"notes,omitempty" bun:"notes"`
 	StatusID     string     `json:"status_id" bun:"status_id,notnull"`
@@ -30,8 +31,10 @@ type Task struct {
 	Subtasks      []Subtask `json:"subtasks,omitempty" bun:"rel:has-many,join:id=task_id"`
 
 	// Relations
-	Project *Project   `json:"project,omitempty" bun:"rel:belongs-to,join:project_id=id"`
-	Status  *StatusTag `json:"status,omitempty" bun:"rel:belongs-to,join:status_id=id"`
+	Project           *Project   `json:"project,omitempty" bun:"rel:belongs-to,join:project_id=id"`
+	Status            *StatusTag `json:"status,omitempty" bun:"rel:belongs-to,join:status_id=id"`
+	ParentTaskDetails *Task      `json:"parent_task_details,omitempty" bun:"rel:belongs-to,join:parent_task=id"`
+	ChildTasks        []Task     `json:"child_tasks,omitempty" bun:"rel:has-many,join:id=parent_task"`
 }
 
 // Subtask represents a to-do item within a task

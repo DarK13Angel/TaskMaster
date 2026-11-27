@@ -12,6 +12,7 @@ import (
 	"taskmaster/internal/state"
 
 	"github.com/google/uuid"
+	"github.com/uptrace/bun"
 )
 
 // ListTasks returns tasks with optional query filters and subtask counts
@@ -68,6 +69,9 @@ func (s *Server) GetTask(w http.ResponseWriter, r *http.Request) {
 		ColumnExpr("s.name AS status_name").
 		Join("JOIN projects p ON t.project_id = p.id").
 		Join("JOIN status_tags s ON t.status_id = s.id").
+		Relation("ChildTasks", func(q *bun.SelectQuery) *bun.SelectQuery {
+			return q.Order("created_at ASC")
+		}).
 		Where("t.id = ?", taskID).
 		Scan(r.Context())
 	if err != nil {
@@ -100,12 +104,13 @@ func (s *Server) GetTask(w http.ResponseWriter, r *http.Request) {
 // CreateTask adds a new task to a project
 func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProjectID string          `json:"project_id"`
-		Title     string          `json:"title"`
-		Notes     string          `json:"notes"`
-		StatusID  string          `json:"status_id"`
-		Priority  models.Priority `json:"priority"`
-		DueDate   *time.Time      `json:"due_date"`
+		ProjectID  string          `json:"project_id"`
+		ParentTask *string         `json:"parent_task"`
+		Title      string          `json:"title"`
+		Notes      string          `json:"notes"`
+		StatusID   string          `json:"status_id"`
+		Priority   models.Priority `json:"priority"`
+		DueDate    *time.Time      `json:"due_date"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -155,6 +160,28 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var parentTask *string
+	if req.ParentTask != nil {
+		trimmed := strings.TrimSpace(*req.ParentTask)
+		if trimmed != "" {
+			var parentProjectID string
+			err := s.DB.NewSelect().
+				Model((*models.Task)(nil)).
+				Column("project_id").
+				Where("id = ?", trimmed).
+				Scan(r.Context(), &parentProjectID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid parent_task")
+				return
+			}
+			if parentProjectID != req.ProjectID {
+				writeError(w, http.StatusBadRequest, "parent_task must belong to the same project")
+				return
+			}
+			parentTask = &trimmed
+		}
+	}
+
 	// Validate priority, default to Medium if empty
 	if !req.Priority.IsValid() {
 		req.Priority = models.PriorityMedium
@@ -162,13 +189,14 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 
 	id := uuid.New().String()
 	task := models.Task{
-		ID:        id,
-		ProjectID: req.ProjectID,
-		Title:     req.Title,
-		Notes:     req.Notes,
-		StatusID:  targetStatus.ID,
-		Priority:  req.Priority,
-		DueDate:   req.DueDate,
+		ID:         id,
+		ProjectID:  req.ProjectID,
+		ParentTask: parentTask,
+		Title:      req.Title,
+		Notes:      req.Notes,
+		StatusID:   targetStatus.ID,
+		Priority:   req.Priority,
+		DueDate:    req.DueDate,
 	}
 
 	if _, err := s.DB.NewInsert().Model(&task).Exec(r.Context()); err != nil {
@@ -193,11 +221,12 @@ func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Title     *string          `json:"title"`
-		Notes     *string          `json:"notes"`
-		Priority  *models.Priority `json:"priority"`
-		DueDate   *time.Time       `json:"due_date"`
-		ProjectID *string          `json:"project_id"`
+		Title      *string          `json:"title"`
+		Notes      *string          `json:"notes"`
+		Priority   *models.Priority `json:"priority"`
+		DueDate    *time.Time       `json:"due_date"`
+		ProjectID  *string          `json:"project_id"`
+		ParentTask *string          `json:"parent_task"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -228,6 +257,44 @@ func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	if req.ProjectID != nil && *req.ProjectID != "" {
 		q = q.Set("project_id = ?", *req.ProjectID)
 		hasUpdates = true
+	}
+	if req.ParentTask != nil {
+		trimmed := strings.TrimSpace(*req.ParentTask)
+		if trimmed == "" {
+			q = q.Set("parent_task = NULL")
+			hasUpdates = true
+		} else {
+			if trimmed == taskID {
+				writeError(w, http.StatusBadRequest, "task cannot be its own parent")
+				return
+			}
+			var parentProjectID string
+			if err := s.DB.NewSelect().
+				Model((*models.Task)(nil)).
+				Column("project_id").
+				Where("id = ?", trimmed).
+				Scan(r.Context(), &parentProjectID); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid parent_task")
+				return
+			}
+			targetProjectID := ""
+			if req.ProjectID != nil && *req.ProjectID != "" {
+				targetProjectID = *req.ProjectID
+			} else if err := s.DB.NewSelect().
+				Model((*models.Task)(nil)).
+				Column("project_id").
+				Where("id = ?", taskID).
+				Scan(r.Context(), &targetProjectID); err != nil {
+				writeError(w, http.StatusNotFound, "task not found")
+				return
+			}
+			if parentProjectID != targetProjectID {
+				writeError(w, http.StatusBadRequest, "parent_task must belong to the same project")
+				return
+			}
+			q = q.Set("parent_task = ?", trimmed)
+			hasUpdates = true
+		}
 	}
 
 	if !hasUpdates {
