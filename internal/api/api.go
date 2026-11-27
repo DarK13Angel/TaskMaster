@@ -63,6 +63,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Projects
 	mux.HandleFunc("GET /api/v1/projects", s.ListProjects)
+	mux.HandleFunc("GET /api/v1/projects/{id}", s.GetProject)
 	mux.HandleFunc("POST /api/v1/projects", s.CreateProject)
 	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.UpdateProject)
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.DeleteProject)

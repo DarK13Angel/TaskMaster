@@ -40,6 +40,32 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projects)
 }
 
+// GetProject returns a project by id
+func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "project id is required")
+		return
+	}
+
+	var p models.Project
+	var desc sql.NullString
+	err := s.DB.QueryRow(`
+		SELECT id, name, description, sort_order, COALESCE(is_archived, 0), COALESCE(historical_done_count, 0), created_at, updated_at
+		FROM projects
+		WHERE id = ?
+	`, id).Scan(&p.ID, &p.Name, &desc, &p.SortOrder, &p.IsArchived, &p.HistoricalDoneCount, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to query project: "+err.Error())
+		return
+	}
+	if desc.Valid {
+		p.Description = desc.String
+	}
+
+	writeJSON(w, http.StatusOK, p)
+}
+
 // CreateProject adds a new project
 func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	var req struct {
