@@ -26,7 +26,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 		Model(&projects).
 		Offset(skip).
 		Limit(limit).
-		Order("sort_order ASC, created_at ASC").
+		Order("sort_order ASC", "created_at ASC").
 		Scan(r.Context())
 
 	if err != nil {

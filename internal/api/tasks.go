@@ -87,7 +87,7 @@ func (s *Server) GetTask(w http.ResponseWriter, r *http.Request) {
 	if err := s.DB.NewSelect().
 		Model(&subtasks).
 		Where("task_id = ?", taskID).
-		Order("sort_order ASC, created_at ASC").
+		Order("sort_order ASC", "created_at ASC").
 		Scan(r.Context()); err == nil {
 		for _, st := range subtasks {
 			t.TotalSubtasks++
@@ -433,7 +433,7 @@ func (s *Server) ListSubtasks(w http.ResponseWriter, r *http.Request) {
 	err := s.DB.NewSelect().
 		Model(&subtasks).
 		Where("task_id = ?", taskID).
-		Order("sort_order ASC, created_at ASC").
+		Order("sort_order ASC", "created_at ASC").
 		Scan(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query subtasks")
