@@ -1,8 +1,7 @@
 package api
 
 import (
-	"database/sql"
-	"encoding/json"
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -10,23 +9,47 @@ import (
 
 	"taskmaster/internal/models"
 	"taskmaster/internal/state"
+	"taskmaster/internal/utils"
 
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
-// ListTasks returns tasks with optional query filters and subtask counts
-func (s *Server) ListTasks(w http.ResponseWriter, r *http.Request) {
-	tasks := make([]models.Task, 0)
-	q := s.DB.NewSelect().
-		Model(&tasks).
+func (s *Server) taskBaseSelect(model any) *bun.SelectQuery {
+	return s.DB.NewSelect().
+		Model(model).
 		Column("t.*").
 		ColumnExpr("p.name AS project_name").
 		ColumnExpr("s.name AS status_name").
-		ColumnExpr("(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id) AS total_subtasks").
-		ColumnExpr("(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id AND is_done = 1) AS done_subtasks").
 		Join("JOIN projects p ON t.project_id = p.id").
 		Join("JOIN status_tags s ON t.status_id = s.id")
+}
+
+func (s *Server) validateParentTask(ctx context.Context, parentID, projectID, selfTaskID string) error {
+	if selfTaskID != "" && parentID == selfTaskID {
+		return errors.New("task cannot be its own parent")
+	}
+
+	var parentProjectID string
+	if err := s.DB.NewSelect().
+		Model((*models.Task)(nil)).
+		Column("project_id").
+		Where("id = ?", parentID).
+		Scan(ctx, &parentProjectID); err != nil {
+		return errors.New("invalid parent_task")
+	}
+	if parentProjectID != projectID {
+		return errors.New("parent_task must belong to the same project")
+	}
+	return nil
+}
+
+// ListTasks returns tasks with optional query filters and subtask counts
+func (s *Server) ListTasks(w http.ResponseWriter, r *http.Request) {
+	tasks := make([]models.Task, 0)
+	q := s.taskBaseSelect(&tasks).
+		ColumnExpr("(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id) AS total_subtasks").
+		ColumnExpr("(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id AND is_done = 1) AS done_subtasks")
 
 	if r.URL.Query().Get("include_archived") != "true" {
 		q = q.Where("COALESCE(p.is_archived, 0) = 0")
@@ -46,59 +69,48 @@ func (s *Server) ListTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := q.Order("t.created_at DESC").Scan(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to query tasks")
+		utils.WriteError(w, http.StatusInternalServerError, "failed to query tasks")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, tasks)
+	utils.WriteJSON(w, http.StatusOK, tasks)
 }
 
-// GetTask returns a single task with its full list of subtasks
+// GetTask returns a single task with its full list of subtasks and child tasks
 func (s *Server) GetTask(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("id")
-	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task id is required")
+	taskID, err := utils.RequirePathID(r, "id", "task id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	var t models.Task
-	err := s.DB.NewSelect().
-		Model(&t).
-		Column("t.*").
-		ColumnExpr("p.name AS project_name").
-		ColumnExpr("s.name AS status_name").
-		Join("JOIN projects p ON t.project_id = p.id").
-		Join("JOIN status_tags s ON t.status_id = s.id").
+	err = s.taskBaseSelect(&t).
+		Relation("Subtasks", func(q *bun.SelectQuery) *bun.SelectQuery {
+			return q.Order("sort_order ASC", "created_at ASC")
+		}).
 		Relation("ChildTasks", func(q *bun.SelectQuery) *bun.SelectQuery {
 			return q.Order("created_at ASC")
 		}).
 		Where("t.id = ?", taskID).
 		Scan(r.Context())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "task not found")
+		if utils.IsNotFound(err) {
+			utils.WriteError(w, http.StatusNotFound, "task not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to fetch task: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to fetch task: "+err.Error())
 		return
 	}
 
-	subtasks := make([]models.Subtask, 0)
-	if err := s.DB.NewSelect().
-		Model(&subtasks).
-		Where("task_id = ?", taskID).
-		Order("sort_order ASC", "created_at ASC").
-		Scan(r.Context()); err == nil {
-		for _, st := range subtasks {
-			t.TotalSubtasks++
-			if st.IsDone {
-				t.DoneSubtasks++
-			}
+	for _, st := range t.Subtasks {
+		t.TotalSubtasks++
+		if st.IsDone {
+			t.DoneSubtasks++
 		}
-		t.Subtasks = subtasks
 	}
 
-	writeJSON(w, http.StatusOK, t)
+	utils.WriteJSON(w, http.StatusOK, t)
 }
 
 // CreateTask adds a new task to a project
@@ -113,13 +125,12 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 		DueDate    *time.Time      `json:"due_date"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if strings.TrimSpace(req.Title) == "" {
-		writeError(w, http.StatusBadRequest, "task title is required")
+		utils.WriteError(w, http.StatusBadRequest, "task title is required")
 		return
 	}
 
@@ -132,7 +143,7 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 			Limit(1).
 			Scan(r.Context(), &req.ProjectID)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "no project found; create a project first")
+			utils.WriteError(w, http.StatusBadRequest, "no project found; create a project first")
 			return
 		}
 	}
@@ -140,49 +151,33 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 	// Fetch or default the status_id to an initial status (ToDo or Backlog)
 	var targetStatus models.StatusTag
 	if req.StatusID != "" {
-		err := s.DB.NewSelect().Model(&targetStatus).Where("id = ?", req.StatusID).Scan(r.Context())
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid status_id")
+		if err := s.DB.NewSelect().Model(&targetStatus).Where("id = ?", req.StatusID).Scan(r.Context()); err != nil {
+			utils.WriteError(w, http.StatusBadRequest, "invalid status_id")
 			return
 		}
 	} else {
-		// Default to 'ToDo' if not specified
-		err := s.DB.NewSelect().Model(&targetStatus).Where("name = ?", "ToDo").Scan(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "default ToDo status not found")
+		if err := s.DB.NewSelect().Model(&targetStatus).Where("name = ?", "ToDo").Scan(r.Context()); err != nil {
+			utils.WriteError(w, http.StatusInternalServerError, "default ToDo status not found")
 			return
 		}
 	}
 
-	// Validate creation rule via state machine
 	if err := state.ValidateCreation(targetStatus); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	var parentTask *string
 	if req.ParentTask != nil {
-		trimmed := strings.TrimSpace(*req.ParentTask)
-		if trimmed != "" {
-			var parentProjectID string
-			err := s.DB.NewSelect().
-				Model((*models.Task)(nil)).
-				Column("project_id").
-				Where("id = ?", trimmed).
-				Scan(r.Context(), &parentProjectID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid parent_task")
-				return
-			}
-			if parentProjectID != req.ProjectID {
-				writeError(w, http.StatusBadRequest, "parent_task must belong to the same project")
+		if trimmed := strings.TrimSpace(*req.ParentTask); trimmed != "" {
+			if err := s.validateParentTask(r.Context(), trimmed, req.ProjectID, ""); err != nil {
+				utils.WriteError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			parentTask = &trimmed
 		}
 	}
 
-	// Validate priority, default to Medium if empty
 	if !req.Priority.IsValid() {
 		req.Priority = models.PriorityMedium
 	}
@@ -200,11 +195,11 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := s.DB.NewInsert().Model(&task).Exec(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to insert task: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to insert task: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{
+	utils.WriteJSON(w, http.StatusCreated, map[string]string{
 		"id":        id,
 		"title":     req.Title,
 		"status_id": targetStatus.ID,
@@ -212,11 +207,11 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// UpdateTask edits the task content (title, notes, priority, due_date, project_id)
+// UpdateTask edits the task content (title, notes, priority, due_date, project_id, parent_task)
 func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("id")
-	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task id is required")
+	taskID, err := utils.RequirePathID(r, "id", "task id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -228,13 +223,11 @@ func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		ProjectID  *string          `json:"project_id"`
 		ParentTask *string          `json:"parent_task"`
 	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// Build dynamic UPDATE query based on fields provided
 	q := s.DB.NewUpdate().Model((*models.Task)(nil))
 	hasUpdates := false
 
@@ -264,19 +257,6 @@ func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
 			q = q.Set("parent_task = NULL")
 			hasUpdates = true
 		} else {
-			if trimmed == taskID {
-				writeError(w, http.StatusBadRequest, "task cannot be its own parent")
-				return
-			}
-			var parentProjectID string
-			if err := s.DB.NewSelect().
-				Model((*models.Task)(nil)).
-				Column("project_id").
-				Where("id = ?", trimmed).
-				Scan(r.Context(), &parentProjectID); err != nil {
-				writeError(w, http.StatusBadRequest, "invalid parent_task")
-				return
-			}
 			targetProjectID := ""
 			if req.ProjectID != nil && *req.ProjectID != "" {
 				targetProjectID = *req.ProjectID
@@ -285,11 +265,11 @@ func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
 				Column("project_id").
 				Where("id = ?", taskID).
 				Scan(r.Context(), &targetProjectID); err != nil {
-				writeError(w, http.StatusNotFound, "task not found")
+				utils.WriteError(w, http.StatusNotFound, "task not found")
 				return
 			}
-			if parentProjectID != targetProjectID {
-				writeError(w, http.StatusBadRequest, "parent_task must belong to the same project")
+			if err := s.validateParentTask(r.Context(), trimmed, targetProjectID, taskID); err != nil {
+				utils.WriteError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			q = q.Set("parent_task = ?", trimmed)
@@ -298,72 +278,68 @@ func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !hasUpdates {
-		writeJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
+		utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
 		return
 	}
 
 	res, err := q.Set("updated_at = CURRENT_TIMESTAMP").Where("id = ?", taskID).Exec(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update task: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to update task: "+err.Error())
+		return
+	}
+	if !utils.HasRowsAffected(res) {
+		utils.WriteError(w, http.StatusNotFound, "task not found")
 		return
 	}
 
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": "task updated successfully"})
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "task updated successfully"})
 }
 
 // MoveTask transitions a task to a target status after running state machine validation
 func (s *Server) MoveTask(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("id")
-	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task id is required")
+	taskID, err := utils.RequirePathID(r, "id", "task id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	var req models.MoveTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TargetStatusID == "" {
-		writeError(w, http.StatusBadRequest, "target_status_id is required")
+	if err := utils.DecodeJSON(r, &req); err != nil || req.TargetStatusID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "target_status_id is required")
 		return
 	}
 
 	// 1. Fetch current task status
 	var currentStatus models.StatusTag
-	err := s.DB.NewSelect().
+	err = s.DB.NewSelect().
 		Model(&currentStatus).
 		Join("JOIN tasks t ON t.status_id = st.id").
 		Where("t.id = ?", taskID).
 		Scan(r.Context())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "task not found")
+		if utils.IsNotFound(err) {
+			utils.WriteError(w, http.StatusNotFound, "task not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to fetch task: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to fetch task: "+err.Error())
 		return
 	}
 
-	// If moving to the exact same status, ignore and return success immediately
 	if currentStatus.ID == req.TargetStatusID {
-		writeJSON(w, http.StatusOK, map[string]string{"message": "status unchanged"})
+		utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "status unchanged"})
 		return
 	}
 
 	// 2. Fetch target status
 	var targetStatus models.StatusTag
-	err = s.DB.NewSelect().Model(&targetStatus).Where("id = ?", req.TargetStatusID).Scan(r.Context())
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "target status not found")
+	if err := s.DB.NewSelect().Model(&targetStatus).Where("id = ?", req.TargetStatusID).Scan(r.Context()); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "target status not found")
 		return
 	}
 
 	// 3. Validate transition
 	if err := state.ValidateTransition(currentStatus, targetStatus); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -381,13 +357,12 @@ func (s *Server) MoveTask(w http.ResponseWriter, r *http.Request) {
 		Set("updated_at = CURRENT_TIMESTAMP").
 		Where("id = ?", taskID).
 		Exec(r.Context())
-
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update task: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to update task: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
 		"id":              taskID,
 		"new_status_id":   targetStatus.ID,
 		"new_status_name": targetStatus.Name,
@@ -396,25 +371,23 @@ func (s *Server) MoveTask(w http.ResponseWriter, r *http.Request) {
 
 // DeleteTask removes a task
 func (s *Server) DeleteTask(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("id")
-	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task id is required")
-		return
-	}
-
-	res, err := s.DB.NewDelete().Model((*models.Task)(nil)).Where("id = ?", taskID).Exec(r.Context())
+	taskID, err := utils.RequirePathID(r, "id", "task id")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete task")
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		writeError(w, http.StatusNotFound, "task not found")
+	deleted, err := utils.DeleteByID(r.Context(), s.DB.DB, (*models.Task)(nil), taskID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to delete task")
+		return
+	}
+	if !deleted {
+		utils.WriteError(w, http.StatusNotFound, "task not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "task deleted"})
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "task deleted"})
 }
 
 // ==========================================
@@ -423,49 +396,45 @@ func (s *Server) DeleteTask(w http.ResponseWriter, r *http.Request) {
 
 // ListSubtasks returns all subtasks for a given task
 func (s *Server) ListSubtasks(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("id")
-	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task id is required")
+	taskID, err := utils.RequirePathID(r, "id", "task id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	subtasks := make([]models.Subtask, 0)
-	err := s.DB.NewSelect().
+	err = s.DB.NewSelect().
 		Model(&subtasks).
 		Where("task_id = ?", taskID).
 		Order("sort_order ASC", "created_at ASC").
 		Scan(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to query subtasks")
+		utils.WriteError(w, http.StatusInternalServerError, "failed to query subtasks")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, subtasks)
+	utils.WriteJSON(w, http.StatusOK, subtasks)
 }
 
 // AddSubtask creates a new checklist item under a task
 func (s *Server) AddSubtask(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("id")
-	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task id is required")
+	taskID, err := utils.RequirePathID(r, "id", "task id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	var req struct {
 		Title string `json:"title"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Title) == "" {
-		writeError(w, http.StatusBadRequest, "subtask title is required")
+	if err := utils.DecodeJSON(r, &req); err != nil || strings.TrimSpace(req.Title) == "" {
+		utils.WriteError(w, http.StatusBadRequest, "subtask title is required")
 		return
 	}
 
-	var maxSort int
-	if err := s.DB.NewSelect().
-		Model((*models.Subtask)(nil)).
-		ColumnExpr("COALESCE(MAX(sort_order), 0)").
-		Where("task_id = ?", taskID).
-		Scan(r.Context(), &maxSort); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add subtask: "+err.Error())
+	sortOrder, err := utils.NextSortOrder(r.Context(), s.DB.DB, (*models.Subtask)(nil), "task_id = ?", taskID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to add subtask: "+err.Error())
 		return
 	}
 
@@ -475,15 +444,15 @@ func (s *Server) AddSubtask(w http.ResponseWriter, r *http.Request) {
 		TaskID:    taskID,
 		Title:     strings.TrimSpace(req.Title),
 		IsDone:    false,
-		SortOrder: maxSort + 1,
+		SortOrder: sortOrder,
 	}
 
 	if _, err := s.DB.NewInsert().Model(&st).Exec(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add subtask: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to add subtask: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, models.Subtask{
+	utils.WriteJSON(w, http.StatusCreated, models.Subtask{
 		ID:     id,
 		TaskID: taskID,
 		Title:  req.Title,
@@ -493,9 +462,9 @@ func (s *Server) AddSubtask(w http.ResponseWriter, r *http.Request) {
 
 // ToggleSubtask toggles completion or updates title of a subtask
 func (s *Server) ToggleSubtask(w http.ResponseWriter, r *http.Request) {
-	subtaskID := r.PathValue("id")
-	if subtaskID == "" {
-		writeError(w, http.StatusBadRequest, "subtask id is required")
+	subtaskID, err := utils.RequirePathID(r, "id", "subtask id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -503,8 +472,8 @@ func (s *Server) ToggleSubtask(w http.ResponseWriter, r *http.Request) {
 		Title  *string `json:"title"`
 		IsDone *bool   `json:"is_done"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -521,44 +490,40 @@ func (s *Server) ToggleSubtask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !hasUpdates {
-		writeJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
+		utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
 		return
 	}
 
 	res, err := q.Where("id = ?", subtaskID).Exec(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update subtask: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to update subtask: "+err.Error())
+		return
+	}
+	if !utils.HasRowsAffected(res) {
+		utils.WriteError(w, http.StatusNotFound, "subtask not found")
 		return
 	}
 
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		writeError(w, http.StatusNotFound, "subtask not found")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": "subtask updated"})
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "subtask updated"})
 }
 
 // DeleteSubtask removes a checklist item
 func (s *Server) DeleteSubtask(w http.ResponseWriter, r *http.Request) {
-	subtaskID := r.PathValue("id")
-	if subtaskID == "" {
-		writeError(w, http.StatusBadRequest, "subtask id is required")
-		return
-	}
-
-	res, err := s.DB.NewDelete().Model((*models.Subtask)(nil)).Where("id = ?", subtaskID).Exec(r.Context())
+	subtaskID, err := utils.RequirePathID(r, "id", "subtask id")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete subtask")
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		writeError(w, http.StatusNotFound, "subtask not found")
+	deleted, err := utils.DeleteByID(r.Context(), s.DB.DB, (*models.Subtask)(nil), subtaskID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to delete subtask")
+		return
+	}
+	if !deleted {
+		utils.WriteError(w, http.StatusNotFound, "subtask not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "subtask deleted"})
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "subtask deleted"})
 }

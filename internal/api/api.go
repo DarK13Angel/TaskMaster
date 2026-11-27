@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"io/fs"
 	"net/http"
 	"strconv"
@@ -9,6 +8,7 @@ import (
 
 	"taskmaster/internal/cleanup"
 	"taskmaster/internal/db"
+	"taskmaster/internal/utils"
 )
 
 type Server struct {
@@ -18,19 +18,6 @@ type Server struct {
 
 func NewServer(database *db.DB, distFS fs.FS) *Server {
 	return &Server{DB: database, DistFS: distFS}
-}
-
-// writeJson write struct or map JSON with given status code
-func writeJSON(w http.ResponseWriter, status int, v any) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
-	return json.NewEncoder(w).Encode(v)
-}
-
-// writeError Standardise Err response
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
 }
 
 // enableCors allows local Vue FE to talk to API without CORS issues
@@ -54,7 +41,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Health check
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "app": "TaskMaster"})
+		utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok", "app": "TaskMaster"})
 	})
 
 	// Status Tags & Priorities
@@ -123,11 +110,11 @@ func (s *Server) TriggerCleanup(w http.ResponseWriter, r *http.Request) {
 
 	deleted, err := cleanup.PurgeOldCompletedTasks(s.DB, days)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cleanup failed: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "cleanup failed: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	utils.WriteJSON(w, http.StatusOK, map[string]any{
 		"message":        "cleanup complete",
 		"purged_count":   deleted,
 		"retention_days": days,

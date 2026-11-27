@@ -1,14 +1,12 @@
 package api
 
 import (
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
+	"time"
+
 	"taskmaster/internal/models"
 	"taskmaster/internal/utils"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -17,7 +15,7 @@ import (
 func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	skip, limit, err := utils.ParsePagination(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -28,35 +26,33 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 		Limit(limit).
 		Order("sort_order ASC", "created_at ASC").
 		Scan(r.Context())
-
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to query projects")
+		utils.WriteError(w, http.StatusInternalServerError, "failed to query projects")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, projects)
+	utils.WriteJSON(w, http.StatusOK, projects)
 }
 
 // GetProject returns a project by id
 func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "project id is required")
+	id, err := utils.RequirePathID(r, "id", "project id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	var p models.Project
-	err := s.DB.NewSelect().Model(&p).Where("id = ?", id).Scan(r.Context())
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "project not found")
+	if err := s.DB.NewSelect().Model(&p).Where("id = ?", id).Scan(r.Context()); err != nil {
+		if utils.IsNotFound(err) {
+			utils.WriteError(w, http.StatusNotFound, "project not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to query project: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to query project: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, p)
+	utils.WriteJSON(w, http.StatusOK, p)
 }
 
 // CreateProject adds a new project
@@ -65,56 +61,49 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
-		writeError(w, http.StatusBadRequest, "project name is required")
+	if err := utils.DecodeJSON(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
+		utils.WriteError(w, http.StatusBadRequest, "project name is required")
+		return
+	}
+
+	sortOrder, err := utils.NextSortOrder(r.Context(), s.DB.DB, (*models.Project)(nil), "")
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to create project")
 		return
 	}
 
 	id := uuid.New().String()
 	name := strings.TrimSpace(req.Name)
-	description := strings.TrimSpace(req.Description)
-
-	var maxSort int
-	if err := s.DB.NewSelect().
-		Model((*models.Project)(nil)).
-		ColumnExpr("COALESCE(MAX(sort_order), 0)").
-		Scan(r.Context(), &maxSort); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create project")
-		return
-	}
-
 	p := models.Project{
 		ID:          id,
 		Name:        name,
-		Description: description,
-		SortOrder:   maxSort + 1,
+		Description: strings.TrimSpace(req.Description),
+		SortOrder:   sortOrder,
 	}
 
-	_, err := s.DB.NewInsert().Model(&p).Exec(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create project")
+	if _, err := s.DB.NewInsert().Model(&p).Exec(r.Context()); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to create project")
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": name})
+	utils.WriteJSON(w, http.StatusCreated, map[string]string{"id": id, "name": name})
 }
 
 // UpdateProject edits project details or archives/unarchives it
 func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "project id is required")
+	id, err := utils.RequirePathID(r, "id", "project id")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
 	var p models.Project
-	// Check Project ID exists
-	err := s.DB.NewSelect().Model(&p).Where("id = ?", id).Scan(r.Context())
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "project not found")
+	if err := s.DB.NewSelect().Model(&p).Where("id = ?", id).Scan(r.Context()); err != nil {
+		if utils.IsNotFound(err) {
+			utils.WriteError(w, http.StatusNotFound, "project not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to query project: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to query project: "+err.Error())
 		return
 	}
 
@@ -123,23 +112,20 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		Description *string `json:"description"`
 		IsArchived  *bool   `json:"is_archived"`
 	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if err := utils.DecodeJSON(r, &req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	changed := false
 	if req.Name != nil {
-		trimmed := strings.TrimSpace(*req.Name)
-		if trimmed != "" && p.Name != trimmed {
+		if trimmed := strings.TrimSpace(*req.Name); trimmed != "" && p.Name != trimmed {
 			p.Name = trimmed
 			changed = true
 		}
 	}
 	if req.Description != nil {
-		trimmed := strings.TrimSpace(*req.Description)
-		if p.Description != trimmed {
+		if trimmed := strings.TrimSpace(*req.Description); p.Description != trimmed {
 			p.Description = trimmed
 			changed = true
 		}
@@ -150,46 +136,41 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !changed {
-		writeJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
+		utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
 		return
 	}
 
 	p.UpdatedAt = time.Now().UTC()
-
 	res, err := s.DB.NewUpdate().Model(&p).Where("id = ?", id).Exec(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())
+		utils.WriteError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())
+		return
+	}
+	if !utils.HasRowsAffected(res) {
+		utils.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": "project updated successfully"})
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "project updated successfully"})
 }
 
 // DeleteProject deletes a project and cascades deletion to its tasks
 func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "project id is required")
-		return
-	}
-
-	res, err := s.DB.NewDelete().Model((*models.Project)(nil)).Where("id = ?", id).Exec(r.Context())
+	id, err := utils.RequirePathID(r, "id", "project id")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete project")
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		writeError(w, http.StatusNotFound, "project not found")
+	deleted, err := utils.DeleteByID(r.Context(), s.DB.DB, (*models.Project)(nil), id)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to delete project")
+		return
+	}
+	if !deleted {
+		utils.WriteError(w, http.StatusNotFound, "project not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "project deleted"})
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "project deleted"})
 }

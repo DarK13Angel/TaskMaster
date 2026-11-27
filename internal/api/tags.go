@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"taskmaster/internal/models"
+	"taskmaster/internal/utils"
 )
 
 // ListStatusTags returns all pipeline status columns ordered by sort_order
@@ -13,11 +14,11 @@ func (s *Server) ListStatusTags(w http.ResponseWriter, r *http.Request) {
 		Order("sort_order ASC").
 		Scan(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to query status tags")
+		utils.WriteError(w, http.StatusInternalServerError, "failed to query status tags")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, tags)
+	utils.WriteJSON(w, http.StatusOK, tags)
 }
 
 // ListPriorities returns the available priority options
@@ -28,5 +29,5 @@ func (s *Server) ListPriorities(w http.ResponseWriter, r *http.Request) {
 		models.PriorityHigh,
 		models.PriorityUrgent,
 	}
-	writeJSON(w, http.StatusOK, priorities)
+	utils.WriteJSON(w, http.StatusOK, priorities)
 }
