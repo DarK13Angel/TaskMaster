@@ -17,4 +17,6 @@ type Project struct {
 	HistoricalDoneCount int       `json:"historical_done_count" bun:"historical_done_count,default:0"`
 	CreatedAt           time.Time `json:"created_at" bun:"created_at,nullzero,notnull,default:current_timestamp"`
 	UpdatedAt           time.Time `json:"updated_at" bun:"updated_at,nullzero,notnull,default:current_timestamp"`
+
+	Tasks []Task `json:"tasks,omitempty" bun:"rel:has-many,join:id=project_id"`
 }

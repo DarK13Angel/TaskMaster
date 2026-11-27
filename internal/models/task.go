@@ -28,6 +28,10 @@ type Task struct {
 	TotalSubtasks int       `json:"total_subtasks" bun:"total_subtasks,scanonly"`
 	DoneSubtasks  int       `json:"done_subtasks" bun:"done_subtasks,scanonly"`
 	Subtasks      []Subtask `json:"subtasks,omitempty" bun:"rel:has-many,join:id=task_id"`
+
+	// Relations
+	Project *Project   `json:"project,omitempty" bun:"rel:belongs-to,join:project_id=id"`
+	Status  *StatusTag `json:"status,omitempty" bun:"rel:belongs-to,join:status_id=id"`
 }
 
 // Subtask represents a to-do item within a task

@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -15,79 +16,37 @@ import (
 
 // ListTasks returns tasks with optional query filters and subtask counts
 func (s *Server) ListTasks(w http.ResponseWriter, r *http.Request) {
-	query := `
-		SELECT 
-			t.id, t.project_id, t.title, t.notes, t.status_id, t.priority, 
-			t.due_date, t.created_at, t.updated_at, t.completed_at,
-			p.name AS project_name, s.name AS status_name,
-			(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id) AS total_subtasks,
-			(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id AND is_done = 1) AS done_subtasks
-		FROM tasks t
-		JOIN projects p ON t.project_id = p.id
-		JOIN status_tags s ON t.status_id = s.id
-		WHERE 1=1
-	`
-	var args []any
+	tasks := make([]models.Task, 0)
+	q := s.DB.NewSelect().
+		Model(&tasks).
+		Column("t.*").
+		ColumnExpr("p.name AS project_name").
+		ColumnExpr("s.name AS status_name").
+		ColumnExpr("(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id) AS total_subtasks").
+		ColumnExpr("(SELECT COUNT(*) FROM subtasks WHERE task_id = t.id AND is_done = 1) AS done_subtasks").
+		Join("JOIN projects p ON t.project_id = p.id").
+		Join("JOIN status_tags s ON t.status_id = s.id")
 
 	if r.URL.Query().Get("include_archived") != "true" {
-		query += " AND COALESCE(p.is_archived, 0) = 0"
+		q = q.Where("COALESCE(p.is_archived, 0) = 0")
 	}
-
 	if projectID := r.URL.Query().Get("project_id"); projectID != "" {
-		query += " AND t.project_id = ?"
-		args = append(args, projectID)
+		q = q.Where("t.project_id = ?", projectID)
 	}
 	if statusID := r.URL.Query().Get("status_id"); statusID != "" {
-		query += " AND t.status_id = ?"
-		args = append(args, statusID)
+		q = q.Where("t.status_id = ?", statusID)
 	}
 	if priority := r.URL.Query().Get("priority"); priority != "" {
-		query += " AND t.priority = ?"
-		args = append(args, priority)
+		q = q.Where("t.priority = ?", priority)
 	}
 	if search := r.URL.Query().Get("search"); search != "" {
-		query += " AND (t.title LIKE ? OR t.notes LIKE ?)"
 		pattern := "%" + search + "%"
-		args = append(args, pattern, pattern)
+		q = q.Where("(t.title LIKE ? OR t.notes LIKE ?)", pattern, pattern)
 	}
 
-	query += " ORDER BY t.created_at DESC"
-
-	rows, err := s.DB.Query(query, args...)
-	if err != nil {
+	if err := q.Order("t.created_at DESC").Scan(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query tasks")
 		return
-	}
-	defer rows.Close()
-
-	tasks := []models.Task{}
-	for rows.Next() {
-		var t models.Task
-		var notes sql.NullString
-		var dueDate, completedAt sql.NullTime
-
-		err := rows.Scan(
-			&t.ID, &t.ProjectID, &t.Title, &notes, &t.StatusID, &t.Priority,
-			&dueDate, &t.CreatedAt, &t.UpdatedAt, &completedAt,
-			&t.ProjectName, &t.StatusName,
-			&t.TotalSubtasks, &t.DoneSubtasks,
-		)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to scan task: "+err.Error())
-			return
-		}
-
-		if notes.Valid {
-			t.Notes = notes.String
-		}
-		if dueDate.Valid {
-			t.DueDate = &dueDate.Time
-		}
-		if completedAt.Valid {
-			t.CompletedAt = &completedAt.Time
-		}
-
-		tasks = append(tasks, t)
 	}
 
 	writeJSON(w, http.StatusOK, tasks)
@@ -101,62 +60,35 @@ func (s *Server) GetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		SELECT 
-			t.id, t.project_id, t.title, t.notes, t.status_id, t.priority, 
-			t.due_date, t.created_at, t.updated_at, t.completed_at,
-			p.name AS project_name, s.name AS status_name
-		FROM tasks t
-		JOIN projects p ON t.project_id = p.id
-		JOIN status_tags s ON t.status_id = s.id
-		WHERE t.id = ?
-	`
-
 	var t models.Task
-	var notes sql.NullString
-	var dueDate, completedAt sql.NullTime
-
-	err := s.DB.QueryRow(query, taskID).Scan(
-		&t.ID, &t.ProjectID, &t.Title, &notes, &t.StatusID, &t.Priority,
-		&dueDate, &t.CreatedAt, &t.UpdatedAt, &completedAt,
-		&t.ProjectName, &t.StatusName,
-	)
-	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	} else if err != nil {
+	err := s.DB.NewSelect().
+		Model(&t).
+		Column("t.*").
+		ColumnExpr("p.name AS project_name").
+		ColumnExpr("s.name AS status_name").
+		Join("JOIN projects p ON t.project_id = p.id").
+		Join("JOIN status_tags s ON t.status_id = s.id").
+		Where("t.id = ?", taskID).
+		Scan(r.Context())
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "task not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to fetch task: "+err.Error())
 		return
 	}
 
-	if notes.Valid {
-		t.Notes = notes.String
-	}
-	if dueDate.Valid {
-		t.DueDate = &dueDate.Time
-	}
-	if completedAt.Valid {
-		t.CompletedAt = &completedAt.Time
-	}
-
-	// Fetch subtasks
-	subRows, err := s.DB.Query(`
-		SELECT id, task_id, title, is_done, sort_order
-		FROM subtasks
-		WHERE task_id = ?
-		ORDER BY sort_order ASC, created_at ASC
-	`, taskID)
-	if err == nil {
-		defer subRows.Close()
-		subtasks := []models.Subtask{}
-		for subRows.Next() {
-			var st models.Subtask
-			if err := subRows.Scan(&st.ID, &st.TaskID, &st.Title, &st.IsDone, &st.SortOrder); err == nil {
-				subtasks = append(subtasks, st)
-				t.TotalSubtasks++
-				if st.IsDone {
-					t.DoneSubtasks++
-				}
+	subtasks := make([]models.Subtask, 0)
+	if err := s.DB.NewSelect().
+		Model(&subtasks).
+		Where("task_id = ?", taskID).
+		Order("sort_order ASC, created_at ASC").
+		Scan(r.Context()); err == nil {
+		for _, st := range subtasks {
+			t.TotalSubtasks++
+			if st.IsDone {
+				t.DoneSubtasks++
 			}
 		}
 		t.Subtasks = subtasks
@@ -188,7 +120,12 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 
 	// Default to first project if project_id not provided
 	if req.ProjectID == "" {
-		err := s.DB.QueryRow("SELECT id FROM projects ORDER BY sort_order ASC LIMIT 1").Scan(&req.ProjectID)
+		err := s.DB.NewSelect().
+			Model((*models.Project)(nil)).
+			Column("id").
+			Order("sort_order ASC").
+			Limit(1).
+			Scan(r.Context(), &req.ProjectID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "no project found; create a project first")
 			return
@@ -198,20 +135,14 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 	// Fetch or default the status_id to an initial status (ToDo or Backlog)
 	var targetStatus models.StatusTag
 	if req.StatusID != "" {
-		err := s.DB.QueryRow(`
-			SELECT id, name, sort_order, is_system, is_initial, is_terminal
-			FROM status_tags WHERE id = ?
-		`, req.StatusID).Scan(&targetStatus.ID, &targetStatus.Name, &targetStatus.SortOrder, &targetStatus.IsSystem, &targetStatus.IsInitial, &targetStatus.IsTerminal)
+		err := s.DB.NewSelect().Model(&targetStatus).Where("id = ?", req.StatusID).Scan(r.Context())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid status_id")
 			return
 		}
 	} else {
 		// Default to 'ToDo' if not specified
-		err := s.DB.QueryRow(`
-			SELECT id, name, sort_order, is_system, is_initial, is_terminal
-			FROM status_tags WHERE name = 'ToDo'
-		`).Scan(&targetStatus.ID, &targetStatus.Name, &targetStatus.SortOrder, &targetStatus.IsSystem, &targetStatus.IsInitial, &targetStatus.IsTerminal)
+		err := s.DB.NewSelect().Model(&targetStatus).Where("name = ?", "ToDo").Scan(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "default ToDo status not found")
 			return
@@ -230,12 +161,17 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := uuid.New().String()
-	_, err := s.DB.Exec(`
-		INSERT INTO tasks (id, project_id, title, notes, status_id, priority, due_date)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, id, req.ProjectID, req.Title, req.Notes, targetStatus.ID, req.Priority, req.DueDate)
+	task := models.Task{
+		ID:        id,
+		ProjectID: req.ProjectID,
+		Title:     req.Title,
+		Notes:     req.Notes,
+		StatusID:  targetStatus.ID,
+		Priority:  req.Priority,
+		DueDate:   req.DueDate,
+	}
 
-	if err != nil {
+	if _, err := s.DB.NewInsert().Model(&task).Exec(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to insert task: "+err.Error())
 		return
 	}
@@ -270,40 +206,36 @@ func (s *Server) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build dynamic UPDATE query based on fields provided
-	var updates []string
-	var args []any
+	q := s.DB.NewUpdate().Model((*models.Task)(nil))
+	hasUpdates := false
 
 	if req.Title != nil && strings.TrimSpace(*req.Title) != "" {
-		updates = append(updates, "title = ?")
-		args = append(args, strings.TrimSpace(*req.Title))
+		q = q.Set("title = ?", strings.TrimSpace(*req.Title))
+		hasUpdates = true
 	}
 	if req.Notes != nil {
-		updates = append(updates, "notes = ?")
-		args = append(args, strings.TrimSpace(*req.Notes))
+		q = q.Set("notes = ?", strings.TrimSpace(*req.Notes))
+		hasUpdates = true
 	}
 	if req.Priority != nil && req.Priority.IsValid() {
-		updates = append(updates, "priority = ?")
-		args = append(args, *req.Priority)
+		q = q.Set("priority = ?", *req.Priority)
+		hasUpdates = true
 	}
 	if req.DueDate != nil {
-		updates = append(updates, "due_date = ?")
-		args = append(args, *req.DueDate)
+		q = q.Set("due_date = ?", *req.DueDate)
+		hasUpdates = true
 	}
 	if req.ProjectID != nil && *req.ProjectID != "" {
-		updates = append(updates, "project_id = ?")
-		args = append(args, *req.ProjectID)
+		q = q.Set("project_id = ?", *req.ProjectID)
+		hasUpdates = true
 	}
 
-	if len(updates) == 0 {
+	if !hasUpdates {
 		writeJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
 		return
 	}
 
-	updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
-	query := "UPDATE tasks SET " + strings.Join(updates, ", ") + " WHERE id = ?"
-	args = append(args, taskID)
-
-	res, err := s.DB.Exec(query, args...)
+	res, err := q.Set("updated_at = CURRENT_TIMESTAMP").Where("id = ?", taskID).Exec(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update task: "+err.Error())
 		return
@@ -334,16 +266,16 @@ func (s *Server) MoveTask(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Fetch current task status
 	var currentStatus models.StatusTag
-	err := s.DB.QueryRow(`
-		SELECT s.id, s.name, s.sort_order, s.is_system, s.is_initial, s.is_terminal
-		FROM tasks t
-		JOIN status_tags s ON t.status_id = s.id
-		WHERE t.id = ?
-	`, taskID).Scan(&currentStatus.ID, &currentStatus.Name, &currentStatus.SortOrder, &currentStatus.IsSystem, &currentStatus.IsInitial, &currentStatus.IsTerminal)
-	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	} else if err != nil {
+	err := s.DB.NewSelect().
+		Model(&currentStatus).
+		Join("JOIN tasks t ON t.status_id = st.id").
+		Where("t.id = ?", taskID).
+		Scan(r.Context())
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "task not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to fetch task: "+err.Error())
 		return
 	}
@@ -356,10 +288,7 @@ func (s *Server) MoveTask(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Fetch target status
 	var targetStatus models.StatusTag
-	err = s.DB.QueryRow(`
-		SELECT id, name, sort_order, is_system, is_initial, is_terminal
-		FROM status_tags WHERE id = ?
-	`, req.TargetStatusID).Scan(&targetStatus.ID, &targetStatus.Name, &targetStatus.SortOrder, &targetStatus.IsSystem, &targetStatus.IsInitial, &targetStatus.IsTerminal)
+	err = s.DB.NewSelect().Model(&targetStatus).Where("id = ?", req.TargetStatusID).Scan(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "target status not found")
 		return
@@ -374,15 +303,17 @@ func (s *Server) MoveTask(w http.ResponseWriter, r *http.Request) {
 	// 4. Update task status & timestamp (record completed_at if moving to Done or Killed)
 	var completedAt *time.Time
 	if targetStatus.Name == "Done" || targetStatus.Name == "Killed" {
-		now := time.Now()
+		now := time.Now().UTC()
 		completedAt = &now
 	}
 
-	_, err = s.DB.Exec(`
-		UPDATE tasks 
-		SET status_id = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?
-	`, targetStatus.ID, completedAt, taskID)
+	_, err = s.DB.NewUpdate().
+		Model((*models.Task)(nil)).
+		Set("status_id = ?", targetStatus.ID).
+		Set("completed_at = ?", completedAt).
+		Set("updated_at = CURRENT_TIMESTAMP").
+		Where("id = ?", taskID).
+		Exec(r.Context())
 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update task: "+err.Error())
@@ -404,7 +335,7 @@ func (s *Server) DeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.DB.Exec("DELETE FROM tasks WHERE id = ?", taskID)
+	res, err := s.DB.NewDelete().Model((*models.Task)(nil)).Where("id = ?", taskID).Exec(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete task")
 		return
@@ -431,26 +362,15 @@ func (s *Server) ListSubtasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.DB.Query(`
-		SELECT id, task_id, title, is_done, sort_order
-		FROM subtasks
-		WHERE task_id = ?
-		ORDER BY sort_order ASC, created_at ASC
-	`, taskID)
+	subtasks := make([]models.Subtask, 0)
+	err := s.DB.NewSelect().
+		Model(&subtasks).
+		Where("task_id = ?", taskID).
+		Order("sort_order ASC, created_at ASC").
+		Scan(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query subtasks")
 		return
-	}
-	defer rows.Close()
-
-	subtasks := []models.Subtask{}
-	for rows.Next() {
-		var st models.Subtask
-		if err := rows.Scan(&st.ID, &st.TaskID, &st.Title, &st.IsDone, &st.SortOrder); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to scan subtask")
-			return
-		}
-		subtasks = append(subtasks, st)
 	}
 
 	writeJSON(w, http.StatusOK, subtasks)
@@ -472,13 +392,26 @@ func (s *Server) AddSubtask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := uuid.New().String()
-	_, err := s.DB.Exec(`
-		INSERT INTO subtasks (id, task_id, title, is_done, sort_order)
-		VALUES (?, ?, ?, 0, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM subtasks WHERE task_id = ?))
-	`, id, taskID, strings.TrimSpace(req.Title), taskID)
+	var maxSort int
+	if err := s.DB.NewSelect().
+		Model((*models.Subtask)(nil)).
+		ColumnExpr("COALESCE(MAX(sort_order), 0)").
+		Where("task_id = ?", taskID).
+		Scan(r.Context(), &maxSort); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add subtask: "+err.Error())
+		return
+	}
 
-	if err != nil {
+	id := uuid.New().String()
+	st := models.Subtask{
+		ID:        id,
+		TaskID:    taskID,
+		Title:     strings.TrimSpace(req.Title),
+		IsDone:    false,
+		SortOrder: maxSort + 1,
+	}
+
+	if _, err := s.DB.NewInsert().Model(&st).Exec(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add subtask: "+err.Error())
 		return
 	}
@@ -508,27 +441,24 @@ func (s *Server) ToggleSubtask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var updates []string
-	var args []any
+	q := s.DB.NewUpdate().Model((*models.Subtask)(nil))
+	hasUpdates := false
 
 	if req.Title != nil {
-		updates = append(updates, "title = ?")
-		args = append(args, strings.TrimSpace(*req.Title))
+		q = q.Set("title = ?", strings.TrimSpace(*req.Title))
+		hasUpdates = true
 	}
 	if req.IsDone != nil {
-		updates = append(updates, "is_done = ?")
-		args = append(args, *req.IsDone)
+		q = q.Set("is_done = ?", *req.IsDone)
+		hasUpdates = true
 	}
 
-	if len(updates) == 0 {
+	if !hasUpdates {
 		writeJSON(w, http.StatusOK, map[string]string{"message": "no changes"})
 		return
 	}
 
-	query := "UPDATE subtasks SET " + strings.Join(updates, ", ") + " WHERE id = ?"
-	args = append(args, subtaskID)
-
-	res, err := s.DB.Exec(query, args...)
+	res, err := q.Where("id = ?", subtaskID).Exec(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update subtask: "+err.Error())
 		return
@@ -551,7 +481,7 @@ func (s *Server) DeleteSubtask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.DB.Exec("DELETE FROM subtasks WHERE id = ?", subtaskID)
+	res, err := s.DB.NewDelete().Model((*models.Subtask)(nil)).Where("id = ?", subtaskID).Exec(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete subtask")
 		return
